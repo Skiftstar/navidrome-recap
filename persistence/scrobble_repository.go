@@ -14,6 +14,14 @@ type scrobbleRepository struct {
 	sqlRepository
 }
 
+// totalMinutesExpr sums each scrobble's real played duration
+// (s.played_duration_ms, set from reportPlayback's positionMs or
+// scrobble.view's msPlayed - both already clamped to the track's duration by
+// scrobbler.clampPlayedDuration before being persisted) where known, falling
+// back to the track's full duration (seconds -> ms) where it isn't (older
+// rows, clients that don't report it, batch scrobble.view calls).
+const totalMinutesExpr = "coalesce(sum(coalesce(s.played_duration_ms, mf.duration * 1000)), 0) / 60000.0"
+
 func fromTs(_ string, value any) Sqlizer {
 	return GtOrEq{"scrobbles.submission_time": value}
 }
@@ -26,7 +34,7 @@ func (r *scrobbleRepository) baseQuery(options ...model.QueryOptions) SelectBuil
 	user := loggedUser(r.ctx)
 
 	return r.newSelect(options...).
-		Columns("id", "media_file_id", "submission_time").
+		Columns("id", "media_file_id", "submission_time", "played_duration_ms").
 		Where(Eq{"scrobbles.user_id": user.ID})
 }
 
@@ -45,12 +53,13 @@ func NewScrobbleRepository(ctx context.Context, db dbx.Builder) model.ScrobbleRe
 	return r
 }
 
-func (r *scrobbleRepository) RecordScrobble(mediaFileID string, submissionTime time.Time) error {
+func (r *scrobbleRepository) RecordScrobble(mediaFileID string, submissionTime time.Time, playedDurationMs *int64) error {
 	userID := loggedUser(r.ctx).ID
 	values := map[string]any{
-		"media_file_id":   mediaFileID,
-		"user_id":         userID,
-		"submission_time": submissionTime.Unix(),
+		"media_file_id":      mediaFileID,
+		"user_id":            userID,
+		"submission_time":    submissionTime.Unix(),
+		"played_duration_ms": playedDurationMs,
 	}
 	insert := Insert(r.tableName).SetMap(values)
 	_, err := r.executeSQL(insert)
@@ -104,7 +113,7 @@ func (r *scrobbleRepository) TopSongs(from, to time.Time, limit int) ([]model.To
 		Columns(
 			"s.media_file_id", "mf.title", "mf.artist",
 			"count(*) as play_count",
-			"coalesce(sum(mf.duration), 0) / 60.0 as total_minutes",
+			totalMinutesExpr+" as total_minutes",
 		).
 		GroupBy("s.media_file_id").
 		OrderBy("play_count desc").
@@ -123,7 +132,7 @@ func (r *scrobbleRepository) TopArtists(from, to time.Time, limit int) ([]model.
 	sel := Select(
 		"mfa.artist_id", "ar.name",
 		"count(*) as play_count",
-		"coalesce(sum(mf.duration), 0) / 60.0 as total_minutes",
+		totalMinutesExpr+" as total_minutes",
 	).
 		From("scrobbles s").
 		Join("media_file mf on mf.id = s.media_file_id").
@@ -151,7 +160,7 @@ func (r *scrobbleRepository) Summary(from, to time.Time) (model.ListenSummary, e
 	totalsSel := r.scrobbleJoinMediaFile(from, to).
 		Columns(
 			"count(*) as play_count",
-			"coalesce(sum(mf.duration), 0) / 60.0 as total_minutes",
+			totalMinutesExpr+" as total_minutes",
 			"count(distinct s.media_file_id) as unique_songs",
 		)
 	if err := r.queryOne(totalsSel, &totals); err != nil {

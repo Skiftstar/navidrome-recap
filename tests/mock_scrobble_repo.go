@@ -44,12 +44,13 @@ func (m *MockScrobbleRepo) CountAll(options ...model.QueryOptions) (int64, error
 	return int64(len(m.RecordedScrobbles)), nil
 }
 
-func (m *MockScrobbleRepo) RecordScrobble(fileID string, submissionTime time.Time) error {
+func (m *MockScrobbleRepo) RecordScrobble(fileID string, submissionTime time.Time, playedDurationMs *int64) error {
 	user, _ := request.UserFrom(m.ctx)
 	m.RecordedScrobbles = append(m.RecordedScrobbles, model.Scrobble{
-		MediaFileID:    fileID,
-		UserID:         user.ID,
-		SubmissionTime: submissionTime.Unix(),
+		MediaFileID:      fileID,
+		UserID:           user.ID,
+		SubmissionTime:   submissionTime.Unix(),
+		PlayedDurationMs: playedDurationMs,
 	})
 	return nil
 }

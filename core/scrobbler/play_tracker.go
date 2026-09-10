@@ -54,6 +54,9 @@ type PlaybackSession struct {
 type Submission struct {
 	TrackID   string
 	Timestamp time.Time
+	// PlayedDurationMs is the actual time played, in milliseconds, if the
+	// client supplied one (scrobble.view's msPlayed param) - nil otherwise.
+	PlayedDurationMs *int64
 }
 
 type ReportPlaybackParams struct {
@@ -373,7 +376,7 @@ func (p *playTracker) ReportPlayback(ctx context.Context, params ReportPlaybackP
 			trackDurationMs := int64(mf.Duration * 1000)
 			threshold := min(trackDurationMs*50/100, 240_000)
 			if params.PositionMs >= threshold {
-				err = p.incPlay(ctx, mf, now)
+				err = p.incPlay(ctx, mf, now, &params.PositionMs)
 				if err != nil {
 					log.Warn(ctx, "Error updating play counts", "id", mf.ID, "track", mf.Title, "user", user.UserName, err)
 				}
@@ -476,7 +479,7 @@ func (p *playTracker) Submit(ctx context.Context, submissions []Submission) erro
 			continue
 		}
 		filtered := p.isFilteredOut(ctx, mf)
-		err = p.incPlay(ctx, mf, s.Timestamp)
+		err = p.incPlay(ctx, mf, s.Timestamp, s.PlayedDurationMs)
 		if err != nil {
 			log.Error(ctx, "Error updating play counts", "id", mf.ID, "track", mf.Title, "user", username, err)
 		} else {
@@ -495,7 +498,8 @@ func (p *playTracker) Submit(ctx context.Context, submissions []Submission) erro
 	return nil
 }
 
-func (p *playTracker) incPlay(ctx context.Context, track *model.MediaFile, timestamp time.Time) error {
+func (p *playTracker) incPlay(ctx context.Context, track *model.MediaFile, timestamp time.Time, playedDurationMs *int64) error {
+	playedDurationMs = clampPlayedDuration(playedDurationMs, track.Duration)
 	return p.ds.WithTx(func(tx model.DataStore) error {
 		err := tx.MediaFile(ctx).IncPlayCount(track.ID, timestamp)
 		if err != nil {
@@ -512,10 +516,30 @@ func (p *playTracker) incPlay(ctx context.Context, track *model.MediaFile, times
 			}
 		}
 		if conf.Server.EnableScrobbleHistory {
-			return tx.Scrobble(ctx).RecordScrobble(track.ID, timestamp)
+			return tx.Scrobble(ctx).RecordScrobble(track.ID, timestamp, playedDurationMs)
 		}
 		return nil
 	})
+}
+
+// clampPlayedDuration bounds a client-supplied (scrobble.view's msPlayed) or
+// reportPlayback-derived (positionMs) played duration to [0, track duration]
+// in milliseconds. A client should never be trusted to report a sane value
+// on its own - a bad client, a unit/clock bug, or intentionally bogus input
+// could otherwise inflate listening-stats totals beyond a track's actual
+// length. nil (unknown) passes through unchanged.
+func clampPlayedDuration(ms *int64, trackDuration float32) *int64 {
+	if ms == nil {
+		return nil
+	}
+	clamped := *ms
+	if max := int64(trackDuration * 1000); clamped > max {
+		clamped = max
+	}
+	if clamped < 0 {
+		clamped = 0
+	}
+	return &clamped
 }
 
 // Take this verdict before incPlay mutates what a filter reads, and independently of

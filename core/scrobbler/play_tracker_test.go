@@ -137,6 +137,33 @@ var _ = Describe("PlayTracker", func() {
 		Expect(tracker.builtinScrobblers).ToNot(HaveKey("disabled"))
 	})
 
+	Describe("clampPlayedDuration", func() {
+		It("passes nil through unchanged", func() {
+			Expect(clampPlayedDuration(nil, 180)).To(BeNil())
+		})
+
+		It("passes a value under the track's duration through unchanged", func() {
+			ms := int64(90_000)
+			got := clampPlayedDuration(&ms, 180)
+			Expect(got).ToNot(BeNil())
+			Expect(*got).To(Equal(int64(90_000)))
+		})
+
+		It("caps a value over the track's duration to the track's duration", func() {
+			ms := int64(999_999)
+			got := clampPlayedDuration(&ms, 180)
+			Expect(got).ToNot(BeNil())
+			Expect(*got).To(Equal(int64(180_000)))
+		})
+
+		It("floors a negative value to 0", func() {
+			ms := int64(-500)
+			got := clampPlayedDuration(&ms, 180)
+			Expect(got).ToNot(BeNil())
+			Expect(*got).To(Equal(int64(0)))
+		})
+	})
+
 	Describe("IsBuiltinScrobbler", func() {
 		It("reports whether the name belongs to a registered builtin scrobbler", func() {
 			Expect(IsBuiltinScrobbler("fake")).To(BeTrue())
@@ -337,6 +364,64 @@ var _ = Describe("PlayTracker", func() {
 				mockDS := ds.(*tests.MockDataStore)
 				mockScrobble := mockDS.Scrobble(ctx).(*tests.MockScrobbleRepo)
 				Expect(mockScrobble.RecordedScrobbles).To(HaveLen(0))
+			})
+
+			It("records nil played duration when the submission doesn't supply one", func() {
+				conf.Server.EnableScrobbleHistory = true
+				ctx = request.WithUser(ctx, model.User{ID: "u-1", UserName: "user-1"})
+
+				err := tracker.Submit(ctx, []Submission{{TrackID: "123", Timestamp: time.Now()}})
+
+				Expect(err).ToNot(HaveOccurred())
+				mockDS := ds.(*tests.MockDataStore)
+				mockScrobble := mockDS.Scrobble(ctx).(*tests.MockScrobbleRepo)
+				Expect(mockScrobble.RecordedScrobbles).To(HaveLen(1))
+				Expect(mockScrobble.RecordedScrobbles[0].PlayedDurationMs).To(BeNil())
+			})
+
+			It("records a real played duration under the track's length unchanged", func() {
+				conf.Server.EnableScrobbleHistory = true
+				ctx = request.WithUser(ctx, model.User{ID: "u-1", UserName: "user-1"})
+				playedMs := int64(90_000) // track.Duration is 180s = 180000ms
+
+				err := tracker.Submit(ctx, []Submission{{TrackID: "123", Timestamp: time.Now(), PlayedDurationMs: &playedMs}})
+
+				Expect(err).ToNot(HaveOccurred())
+				mockDS := ds.(*tests.MockDataStore)
+				mockScrobble := mockDS.Scrobble(ctx).(*tests.MockScrobbleRepo)
+				Expect(mockScrobble.RecordedScrobbles).To(HaveLen(1))
+				Expect(mockScrobble.RecordedScrobbles[0].PlayedDurationMs).ToNot(BeNil())
+				Expect(*mockScrobble.RecordedScrobbles[0].PlayedDurationMs).To(Equal(playedMs))
+			})
+
+			It("clamps a played duration longer than the track to the track's length", func() {
+				conf.Server.EnableScrobbleHistory = true
+				ctx = request.WithUser(ctx, model.User{ID: "u-1", UserName: "user-1"})
+				tooLongMs := int64(999_999) // track.Duration is 180s = 180000ms
+
+				err := tracker.Submit(ctx, []Submission{{TrackID: "123", Timestamp: time.Now(), PlayedDurationMs: &tooLongMs}})
+
+				Expect(err).ToNot(HaveOccurred())
+				mockDS := ds.(*tests.MockDataStore)
+				mockScrobble := mockDS.Scrobble(ctx).(*tests.MockScrobbleRepo)
+				Expect(mockScrobble.RecordedScrobbles).To(HaveLen(1))
+				Expect(mockScrobble.RecordedScrobbles[0].PlayedDurationMs).ToNot(BeNil())
+				Expect(*mockScrobble.RecordedScrobbles[0].PlayedDurationMs).To(Equal(int64(180_000)))
+			})
+
+			It("floors a negative played duration to 0", func() {
+				conf.Server.EnableScrobbleHistory = true
+				ctx = request.WithUser(ctx, model.User{ID: "u-1", UserName: "user-1"})
+				negativeMs := int64(-1)
+
+				err := tracker.Submit(ctx, []Submission{{TrackID: "123", Timestamp: time.Now(), PlayedDurationMs: &negativeMs}})
+
+				Expect(err).ToNot(HaveOccurred())
+				mockDS := ds.(*tests.MockDataStore)
+				mockScrobble := mockDS.Scrobble(ctx).(*tests.MockScrobbleRepo)
+				Expect(mockScrobble.RecordedScrobbles).To(HaveLen(1))
+				Expect(mockScrobble.RecordedScrobbles[0].PlayedDurationMs).ToNot(BeNil())
+				Expect(*mockScrobble.RecordedScrobbles[0].PlayedDurationMs).To(Equal(int64(0)))
 			})
 		})
 	})
@@ -548,6 +633,40 @@ var _ = Describe("PlayTracker", func() {
 			playing, err = tracker.GetNowPlaying(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(playing).To(BeEmpty())
+		})
+
+		It("records the stop position as the scrobble's played duration", func() {
+			conf.Server.EnableScrobbleHistory = true
+			ctx = request.WithUser(ctx, model.User{ID: "u-1", UserName: "user-1"})
+
+			err := tracker.ReportPlayback(ctx, ReportPlaybackParams{
+				MediaId: "123", PositionMs: 100_000, State: "stopped", PlaybackRate: 1.0, ClientId: defaultClientId,
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			mockDS := ds.(*tests.MockDataStore)
+			mockScrobble := mockDS.Scrobble(ctx).(*tests.MockScrobbleRepo)
+			Expect(mockScrobble.RecordedScrobbles).To(HaveLen(1))
+			Expect(mockScrobble.RecordedScrobbles[0].PlayedDurationMs).ToNot(BeNil())
+			Expect(*mockScrobble.RecordedScrobbles[0].PlayedDurationMs).To(Equal(int64(100_000)))
+		})
+
+		It("clamps a reported stop position beyond the track's length", func() {
+			conf.Server.EnableScrobbleHistory = true
+			ctx = request.WithUser(ctx, model.User{ID: "u-1", UserName: "user-1"})
+
+			// track.Duration is 180s = 180000ms; report a position beyond that
+			// (e.g. a client clock/unit bug) and confirm it gets clamped, not stored raw.
+			err := tracker.ReportPlayback(ctx, ReportPlaybackParams{
+				MediaId: "123", PositionMs: 999_999, State: "stopped", PlaybackRate: 1.0, ClientId: defaultClientId,
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			mockDS := ds.(*tests.MockDataStore)
+			mockScrobble := mockDS.Scrobble(ctx).(*tests.MockScrobbleRepo)
+			Expect(mockScrobble.RecordedScrobbles).To(HaveLen(1))
+			Expect(mockScrobble.RecordedScrobbles[0].PlayedDurationMs).ToNot(BeNil())
+			Expect(*mockScrobble.RecordedScrobbles[0].PlayedDurationMs).To(Equal(int64(180_000)))
 		})
 
 		It("full lifecycle: starting -> playing -> paused -> playing -> stopped", func() {

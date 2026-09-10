@@ -176,7 +176,16 @@ func (api *Router) Scrobble(r *http.Request) (*responses.Subsonic, error) {
 	ctx := r.Context()
 
 	if submission {
-		err := api.scrobblerSubmit(ctx, ids, times)
+		// msPlayed (fork-only, non-standard extension) is the actual time
+		// played, in milliseconds - distinct from "position" above, which is
+		// about where NowPlaying reports playback to be, not how much of the
+		// track was played. req.Params has no "optional int" accessor that
+		// distinguishes "absent" from a real 0, so parse with a sentinel.
+		var playedDurationMs *int64
+		if ms := p.Int64Or("msPlayed", -1); ms >= 0 && len(ids) == 1 {
+			playedDurationMs = &ms
+		}
+		err := api.scrobblerSubmit(ctx, ids, times, playedDurationMs)
 		if err != nil {
 			log.Error(ctx, "Error registering scrobbles", "ids", ids, "times", times, err)
 		}
@@ -190,7 +199,11 @@ func (api *Router) Scrobble(r *http.Request) (*responses.Subsonic, error) {
 	return newResponse(), nil
 }
 
-func (api *Router) scrobblerSubmit(ctx context.Context, ids []string, times []time.Time) error {
+// scrobblerSubmit submits one or more scrobbles. playedDurationMs is only
+// ever non-nil when scrobbling a single track - it's ambiguous which track
+// it'd apply to for a batch call with several ids, so callers only pass it
+// through in the single-id case.
+func (api *Router) scrobblerSubmit(ctx context.Context, ids []string, times []time.Time, playedDurationMs *int64) error {
 	var submissions []scrobbler.Submission
 	log.Debug(ctx, "Scrobbling tracks", "ids", ids, "times", times)
 	for i, id := range ids {
@@ -200,7 +213,7 @@ func (api *Router) scrobblerSubmit(ctx context.Context, ids []string, times []ti
 		} else {
 			t = time.Now()
 		}
-		submissions = append(submissions, scrobbler.Submission{TrackID: id, Timestamp: t})
+		submissions = append(submissions, scrobbler.Submission{TrackID: id, Timestamp: t, PlayedDurationMs: playedDurationMs})
 	}
 
 	return api.scrobbler.Submit(ctx, submissions)

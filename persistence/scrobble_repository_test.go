@@ -65,14 +65,15 @@ var _ = Describe("ScrobbleRepository", func() {
 			}).Execute()
 			Expect(err).ToNot(HaveOccurred())
 
-			err = repo.RecordScrobble(fileID, submissionTime)
+			err = repo.RecordScrobble(fileID, submissionTime, nil)
 			Expect(err).ToNot(HaveOccurred())
 
 			// Verify insertion
 			var scrobble struct {
-				MediaFileID    string `db:"media_file_id"`
-				UserID         string `db:"user_id"`
-				SubmissionTime int64  `db:"submission_time"`
+				MediaFileID      string `db:"media_file_id"`
+				UserID           string `db:"user_id"`
+				SubmissionTime   int64  `db:"submission_time"`
+				PlayedDurationMs *int64 `db:"played_duration_ms"`
 			}
 			err = rawRepo.db.Select("*").From("scrobbles").
 				Where(dbx.HashExp{"media_file_id": fileID, "user_id": userID}).
@@ -81,6 +82,37 @@ var _ = Describe("ScrobbleRepository", func() {
 			Expect(scrobble.MediaFileID).To(Equal(fileID))
 			Expect(scrobble.UserID).To(Equal(userID))
 			Expect(scrobble.SubmissionTime).To(Equal(submissionTime.Unix()))
+			Expect(scrobble.PlayedDurationMs).To(BeNil())
+		})
+
+		It("persists a real played duration when supplied", func() {
+			submissionTime := time.Now().UTC()
+
+			_, err := rawRepo.db.Insert("user", dbx.Params{
+				"id": userID, "user_name": "user", "password": "pw",
+				"created_at": time.Now(), "updated_at": time.Now(),
+			}).Execute()
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = rawRepo.db.Insert("media_file", dbx.Params{
+				"id": fileID, "path": "path",
+				"created_at": time.Now(), "updated_at": time.Now(),
+			}).Execute()
+			Expect(err).ToNot(HaveOccurred())
+
+			playedMs := int64(123_456)
+			err = repo.RecordScrobble(fileID, submissionTime, &playedMs)
+			Expect(err).ToNot(HaveOccurred())
+
+			var scrobble struct {
+				PlayedDurationMs *int64 `db:"played_duration_ms"`
+			}
+			err = rawRepo.db.Select("played_duration_ms").From("scrobbles").
+				Where(dbx.HashExp{"media_file_id": fileID, "user_id": userID}).
+				One(&scrobble)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(scrobble.PlayedDurationMs).ToNot(BeNil())
+			Expect(*scrobble.PlayedDurationMs).To(Equal(playedMs))
 		})
 	})
 
@@ -151,12 +183,17 @@ var _ = Describe("ScrobbleRepository", func() {
 			insertParticipant(untaggedDuoSongID, artistBID)
 
 			// soloSong scrobbled twice in-range (+ once out-of-range, to verify date filtering),
-			// duoSong once in-range, the duet song once in-range.
-			Expect(repo.RecordScrobble(soloSongID, inRange)).To(Succeed())
-			Expect(repo.RecordScrobble(soloSongID, inRange.Add(time.Hour))).To(Succeed())
-			Expect(repo.RecordScrobble(soloSongID, outOfRange)).To(Succeed())
-			Expect(repo.RecordScrobble(duoSongID, inRange)).To(Succeed())
-			Expect(repo.RecordScrobble(untaggedDuoSongID, inRange)).To(Succeed())
+			// duoSong once in-range, the duet song once in-range. soloSong's first
+			// in-range scrobble carries a real played duration (90s of its 200s length,
+			// as if the listener skipped partway through) to exercise the mixed
+			// real-duration/full-duration-fallback math; every other scrobble has no
+			// played duration, falling back to the track's full length.
+			realPlayedMs := int64(90_000)
+			Expect(repo.RecordScrobble(soloSongID, inRange, &realPlayedMs)).To(Succeed())
+			Expect(repo.RecordScrobble(soloSongID, inRange.Add(time.Hour), nil)).To(Succeed())
+			Expect(repo.RecordScrobble(soloSongID, outOfRange, nil)).To(Succeed())
+			Expect(repo.RecordScrobble(duoSongID, inRange, nil)).To(Succeed())
+			Expect(repo.RecordScrobble(untaggedDuoSongID, inRange, nil)).To(Succeed())
 		})
 
 		AfterEach(func() {
@@ -177,7 +214,7 @@ var _ = Describe("ScrobbleRepository", func() {
 		}
 
 		Describe("TopSongs", func() {
-			It("orders by play count and computes approximate minutes, scoped to the date range", func() {
+			It("orders by play count and computes minutes from the real played duration where known, falling back to full track duration otherwise", func() {
 				from, to := yearRange(2024)
 				songs, err := repo.TopSongs(from, to, 10)
 				Expect(err).ToNot(HaveOccurred())
@@ -189,7 +226,8 @@ var _ = Describe("ScrobbleRepository", func() {
 				}
 				Expect(songs[0].MediaFileID).To(Equal(soloSongID), "the twice-scrobbled song should be first")
 				Expect(byID[soloSongID].PlayCount).To(Equal(int64(2)))
-				Expect(byID[soloSongID].TotalMinutes).To(BeNumerically("~", 2*200.0/60.0, 0.001))
+				// 90s (real, first scrobble) + 200s (fallback, second scrobble) = 290s
+				Expect(byID[soloSongID].TotalMinutes).To(BeNumerically("~", 290.0/60.0, 0.001))
 				Expect(byID[duoSongID].PlayCount).To(Equal(int64(1)))
 				Expect(byID[duoSongID].TotalMinutes).To(BeNumerically("~", 100.0/60.0, 0.001))
 				Expect(byID[untaggedDuoSongID].PlayCount).To(Equal(int64(1)))
@@ -209,7 +247,8 @@ var _ = Describe("ScrobbleRepository", func() {
 					byID[a.ArtistID] = a
 				}
 				Expect(byID[soloArtistID].PlayCount).To(Equal(int64(3)), "2 plays of soloSong + 1 of duoSong")
-				Expect(byID[soloArtistID].TotalMinutes).To(BeNumerically("~", (2*200.0+100.0)/60.0, 0.001))
+				// 290s (soloSong, real+fallback mix) + 100s (duoSong, fallback) = 390s
+				Expect(byID[soloArtistID].TotalMinutes).To(BeNumerically("~", 390.0/60.0, 0.001))
 				Expect(byID[artistAID].PlayCount).To(Equal(int64(1)))
 				Expect(byID[artistBID].PlayCount).To(Equal(int64(1)))
 			})
@@ -225,7 +264,8 @@ var _ = Describe("ScrobbleRepository", func() {
 				// untaggedDuoSong has 2 credited artists (that's the bug TopArtists's join
 				// would cause here if Summary reused it for the overall totals).
 				Expect(summary.PlayCount).To(Equal(int64(4)))
-				Expect(summary.TotalMinutes).To(BeNumerically("~", (2*200.0+100.0+300.0)/60.0, 0.001))
+				// 290s (soloSong, real+fallback mix) + 100s (duoSong, fallback) + 300s (untaggedDuoSong, fallback) = 690s
+				Expect(summary.TotalMinutes).To(BeNumerically("~", 690.0/60.0, 0.001))
 				Expect(summary.UniqueSongs).To(Equal(int64(3)))
 				Expect(summary.UniqueArtists).To(Equal(int64(3)))
 			})

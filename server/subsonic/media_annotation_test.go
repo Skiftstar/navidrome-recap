@@ -74,6 +74,38 @@ var _ = Describe("MediaAnnotationController", func() {
 			Expect(playTracker.Submissions).To(BeEmpty())
 		})
 
+		It("passes msPlayed through for a single-id submission", func() {
+			r := newGetRequest("id=12", "msPlayed=65000")
+
+			_, err := router.Scrobble(r)
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(playTracker.Submissions).To(HaveLen(1))
+			Expect(playTracker.Submissions[0].PlayedDurationMs).ToNot(BeNil())
+			Expect(*playTracker.Submissions[0].PlayedDurationMs).To(Equal(int64(65000)))
+		})
+
+		It("does not apply msPlayed to a batch (multi-id) submission - ambiguous which track it'd apply to", func() {
+			r := newGetRequest("id=12", "id=34", "msPlayed=65000")
+
+			_, err := router.Scrobble(r)
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(playTracker.Submissions).To(HaveLen(2))
+			Expect(playTracker.Submissions[0].PlayedDurationMs).To(BeNil())
+			Expect(playTracker.Submissions[1].PlayedDurationMs).To(BeNil())
+		})
+
+		It("leaves PlayedDurationMs nil when msPlayed isn't supplied", func() {
+			r := newGetRequest("id=12")
+
+			_, err := router.Scrobble(r)
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(playTracker.Submissions).To(HaveLen(1))
+			Expect(playTracker.Submissions[0].PlayedDurationMs).To(BeNil())
+		})
+
 		Context("submission=false", func() {
 			var req *http.Request
 			BeforeEach(func() {

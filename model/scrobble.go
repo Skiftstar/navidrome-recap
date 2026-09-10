@@ -3,17 +3,22 @@ package model
 import "time"
 
 type Scrobble struct {
-	ID             int64  `structs:"id" json:"id"`
-	MediaFileID    string `structs:"media_file_id" json:"mediaFileId"`
-	UserID         string `json:"-"`
-	SubmissionTime int64  `structs:"submission_time" json:"submissionTime"`
+	ID               int64  `structs:"id" json:"id"`
+	MediaFileID      string `structs:"media_file_id" json:"mediaFileId"`
+	UserID           string `json:"-"`
+	SubmissionTime   int64  `structs:"submission_time" json:"submissionTime"`
+	PlayedDurationMs *int64 `structs:"played_duration_ms" json:"playedDurationMs,omitempty"`
 }
 
 type ScrobbleRepository interface {
 	CountAll(options ...QueryOptions) (int64, error)
 	Get(id string) (*Scrobble, error)
 	GetAll(options ...QueryOptions) (Scrobbles, error)
-	RecordScrobble(mediaFileID string, submissionTime time.Time) error
+	// RecordScrobble records a scrobble event. playedDurationMs is the actual
+	// time played, in milliseconds, if known (nil when not supplied by the
+	// client) - callers are expected to have already clamped it to the
+	// track's duration; see scrobbler.clampPlayedDuration.
+	RecordScrobble(mediaFileID string, submissionTime time.Time, playedDurationMs *int64) error
 
 	// TopSongs returns, for the logged-in user, the most-scrobbled songs whose
 	// submission time falls within [from, to], ordered by play count descending.
@@ -31,10 +36,12 @@ type ScrobbleRepository interface {
 
 type Scrobbles []Scrobble
 
-// TotalMinutes for TopSong/TopArtist/ListenSummary is an approximation: each
-// scrobble is treated as one full listen of the track's duration (there is no
-// per-scrobble "seconds actually played" recorded), then summed and converted
-// from seconds to minutes.
+// TotalMinutes for TopSong/TopArtist/ListenSummary uses each scrobble's real
+// played duration when the client supplied one (Scrobble.PlayedDurationMs,
+// via reportPlayback's positionMs or scrobble.view's msPlayed), and falls
+// back to the track's full duration otherwise (older rows, clients that
+// don't report it, or batch scrobble.view calls) - so it's exact wherever
+// possible, and the same full-track approximation as before everywhere else.
 
 type TopSong struct {
 	MediaFileID  string  `db:"media_file_id"  json:"mediaFileId"`
