@@ -128,6 +128,7 @@ func (api *Router) routes() http.Handler {
 			h(r, "getSimilarSongs2", api.GetSimilarSongs2)
 			hr(r, "getSonicSimilarTracks", api.GetSonicSimilarTracks)
 			hr(r, "findSonicPath", api.FindSonicPath)
+			h(r, "getRecap", api.GetRecap)
 		})
 		r.Group(func(r chi.Router) {
 			r.Use(getPlayer(api.players))

@@ -85,6 +85,7 @@ func (api *Router) routes() http.Handler {
 		api.addPlaylistTrackRoute(r)
 		api.addSongPlaylistsRoute(r)
 		api.addQueueRoute(r)
+		api.addStatsRoute(r)
 		api.addMissingFilesRoute(r)
 		api.addKeepAliveRoute(r)
 		api.addInsightsRoute(r)
@@ -192,6 +193,19 @@ func (api *Router) addQueueRoute(r chi.Router) {
 		r.Post("/", saveQueue(api.ds))
 		r.Put("/", updateQueue(api.ds))
 		r.Delete("/", clearQueue(api.ds))
+	})
+}
+
+// addStatsRoute exposes recap/listening-stats aggregates (top artists/songs,
+// overall summary, and the VibeNet taste profile) over the existing
+// scrobbles history. Results are scoped to the logged-in user by the
+// underlying ScrobbleRepository, same as /scrobble itself.
+func (api *Router) addStatsRoute(r chi.Router) {
+	r.Route("/stats", func(r chi.Router) {
+		r.Get("/summary", statsSummary(api.ds))
+		r.Get("/top-artists", topArtists(api.ds))
+		r.Get("/top-songs", topSongs(api.ds))
+		r.Get("/taste-profile", tasteProfile(api.ds))
 	})
 }
 

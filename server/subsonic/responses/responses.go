@@ -63,6 +63,7 @@ type Subsonic struct {
 	PlayQueueByIndex       *PlayQueueByIndex       `xml:"playQueueByIndex,omitempty" json:"playQueueByIndex,omitempty"`
 	TranscodeDecision      *TranscodeDecision      `xml:"transcodeDecision,omitempty"       json:"transcodeDecision,omitempty"`
 	SonicMatches           *Array[SonicMatch]      `xml:"sonicMatch,omitempty"              json:"sonicMatch,omitempty"`
+	Recap                  *Recap                  `xml:"recap,omitempty"                   json:"recap,omitempty"`
 }
 
 const (
@@ -192,6 +193,16 @@ type OpenSubsonicChild struct {
 	Groupings          Array[string]       `xml:"groupings,omitempty"               json:"groupings"`
 	Works              Array[Work]         `xml:"works,omitempty"                   json:"works"`
 	Movements          Array[Movement]     `xml:"movements,omitempty"               json:"movements"`
+
+	// VibeNet audio-feature tags (fork-only extension, not part of the OpenSubsonic spec).
+	// Populated only when the corresponding tag is configured via conf.Server.Tags.
+	Acousticness     *float64 `xml:"acousticness,attr,omitempty"     json:"acousticness,omitempty"`
+	Danceability     *float64 `xml:"danceability,attr,omitempty"     json:"danceability,omitempty"`
+	Energy           *float64 `xml:"energy,attr,omitempty"           json:"energy,omitempty"`
+	Instrumentalness *float64 `xml:"instrumentalness,attr,omitempty" json:"instrumentalness,omitempty"`
+	Liveness         *float64 `xml:"liveness,attr,omitempty"         json:"liveness,omitempty"`
+	Speechiness      *float64 `xml:"speechiness,attr,omitempty"      json:"speechiness,omitempty"`
+	Valence          *float64 `xml:"valence,attr,omitempty"          json:"valence,omitempty"`
 }
 
 type Songs struct {
@@ -451,6 +462,50 @@ type TopSongs struct {
 type SonicMatch struct {
 	Entry      Child   `xml:"entry"      json:"entry"`
 	Similarity float64 `xml:"similarity" json:"similarity"`
+}
+
+// Recap is a fork-only, non-standard extension (not part of the Subsonic or
+// OpenSubsonic spec) returned by getRecap, combining the listening-stats
+// aggregates for a period into one payload: how a recap is actually
+// consumed, one screen/one request.
+type Recap struct {
+	Summary      RecapSummary          `xml:"summary"      json:"summary"`
+	TopSongs     Array[RecapTopSong]   `xml:"topSong,omitempty"   json:"topSong"`
+	TopArtists   Array[RecapTopArtist] `xml:"topArtist,omitempty" json:"topArtist"`
+	TasteProfile RecapTasteProfile     `xml:"tasteProfile" json:"tasteProfile"`
+}
+
+type RecapSummary struct {
+	PlayCount     int64   `xml:"playCount,attr"     json:"playCount"`
+	TotalMinutes  float64 `xml:"totalMinutes,attr"  json:"totalMinutes"`
+	UniqueSongs   int64   `xml:"uniqueSongs,attr"   json:"uniqueSongs"`
+	UniqueArtists int64   `xml:"uniqueArtists,attr" json:"uniqueArtists"`
+}
+
+type RecapTopSong struct {
+	MediaFileId  string  `xml:"mediaFileId,attr"  json:"mediaFileId"`
+	Title        string  `xml:"title,attr"        json:"title"`
+	Artist       string  `xml:"artist,attr"       json:"artist"`
+	PlayCount    int64   `xml:"playCount,attr"    json:"playCount"`
+	TotalMinutes float64 `xml:"totalMinutes,attr" json:"totalMinutes"`
+}
+
+type RecapTopArtist struct {
+	ArtistId     string  `xml:"artistId,attr"     json:"artistId"`
+	Name         string  `xml:"name,attr"         json:"name"`
+	PlayCount    int64   `xml:"playCount,attr"    json:"playCount"`
+	TotalMinutes float64 `xml:"totalMinutes,attr" json:"totalMinutes"`
+}
+
+type RecapTasteProfile struct {
+	Acousticness     *float64 `xml:"acousticness,attr,omitempty"     json:"acousticness,omitempty"`
+	Danceability     *float64 `xml:"danceability,attr,omitempty"     json:"danceability,omitempty"`
+	Energy           *float64 `xml:"energy,attr,omitempty"           json:"energy,omitempty"`
+	Instrumentalness *float64 `xml:"instrumentalness,attr,omitempty" json:"instrumentalness,omitempty"`
+	Liveness         *float64 `xml:"liveness,attr,omitempty"         json:"liveness,omitempty"`
+	Speechiness      *float64 `xml:"speechiness,attr,omitempty"      json:"speechiness,omitempty"`
+	Valence          *float64 `xml:"valence,attr,omitempty"          json:"valence,omitempty"`
+	TrackCount       int64    `xml:"trackCount,attr"                 json:"trackCount"`
 }
 
 type PlayQueue struct {

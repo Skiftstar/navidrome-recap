@@ -84,6 +84,186 @@ var _ = Describe("ScrobbleRepository", func() {
 		})
 	})
 
+	Describe("Recap stats (TopSongs/TopArtists/Summary/TasteProfile)", func() {
+		var userID, soloArtistID, artistAID, artistBID string
+		var soloSongID, duoSongID, untaggedDuoSongID string
+		var rawRepo sqlRepository
+		var inRange, outOfRange time.Time
+
+		BeforeEach(func() {
+			userID = id.NewRandom()
+			soloArtistID = id.NewRandom()
+			artistAID = id.NewRandom()
+			artistBID = id.NewRandom()
+			soloSongID = id.NewRandom()        // solo artist, tagged (acousticness+energy), duration 200s
+			duoSongID = id.NewRandom()         // solo artist, tagged (acousticness only), duration 100s
+			untaggedDuoSongID = id.NewRandom() // two credited artists, untagged, duration 300s
+
+			ctx = request.WithUser(log.NewContext(GinkgoT().Context()), model.User{ID: userID, UserName: "recapuser", IsAdmin: true})
+			db := GetDBXBuilder()
+			repo = NewScrobbleRepository(ctx, db)
+			rawRepo = sqlRepository{ctx: ctx, tableName: "scrobbles", db: db}
+
+			inRange = time.Date(2024, 6, 15, 12, 0, 0, 0, time.UTC)
+			outOfRange = time.Date(2023, 6, 15, 12, 0, 0, 0, time.UTC)
+
+			_, err := db.Insert("user", dbx.Params{
+				"id": userID, "user_name": "recapuser", "password": "pw",
+				"created_at": time.Now(), "updated_at": time.Now(),
+			}).Execute()
+			Expect(err).ToNot(HaveOccurred())
+
+			for _, a := range []struct{ id, name string }{
+				{soloArtistID, "Solo Artist"}, {artistAID, "Artist A"}, {artistBID, "Artist B"},
+			} {
+				_, err := db.Insert("artist", dbx.Params{"id": a.id, "name": a.name}).Execute()
+				Expect(err).ToNot(HaveOccurred())
+			}
+
+			insertSong := func(id, title, artist, artistID string, duration int, tags model.Tags) {
+				if tags == nil {
+					tags = model.Tags{}
+				}
+				_, err := db.Insert("media_file", dbx.Params{
+					"id": id, "path": id, "title": title, "artist": artist, "artist_id": artistID,
+					"duration": duration, "tags": marshalTags(tags),
+					"created_at": time.Now(), "updated_at": time.Now(),
+				}).Execute()
+				Expect(err).ToNot(HaveOccurred())
+			}
+			insertSong(soloSongID, "Solo Song", "Solo Artist", soloArtistID, 200, model.Tags{
+				"acousticness": {"0.2"}, "energy": {"0.8"},
+			})
+			insertSong(duoSongID, "Another Solo Song", "Solo Artist", soloArtistID, 100, model.Tags{
+				"acousticness": {"0.6"},
+			})
+			insertSong(untaggedDuoSongID, "Duet Song", "Artist A", artistAID, 300, nil)
+
+			insertParticipant := func(mediaFileID, artistID string) {
+				_, err := db.Insert("media_file_artists", dbx.Params{
+					"media_file_id": mediaFileID, "artist_id": artistID, "role": model.RoleArtist.String(),
+				}).Execute()
+				Expect(err).ToNot(HaveOccurred())
+			}
+			insertParticipant(soloSongID, soloArtistID)
+			insertParticipant(duoSongID, soloArtistID)
+			insertParticipant(untaggedDuoSongID, artistAID)
+			insertParticipant(untaggedDuoSongID, artistBID)
+
+			// soloSong scrobbled twice in-range (+ once out-of-range, to verify date filtering),
+			// duoSong once in-range, the duet song once in-range.
+			Expect(repo.RecordScrobble(soloSongID, inRange)).To(Succeed())
+			Expect(repo.RecordScrobble(soloSongID, inRange.Add(time.Hour))).To(Succeed())
+			Expect(repo.RecordScrobble(soloSongID, outOfRange)).To(Succeed())
+			Expect(repo.RecordScrobble(duoSongID, inRange)).To(Succeed())
+			Expect(repo.RecordScrobble(untaggedDuoSongID, inRange)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			for _, songID := range []string{soloSongID, duoSongID, untaggedDuoSongID} {
+				_, _ = rawRepo.db.Delete("scrobbles", dbx.HashExp{"media_file_id": songID}).Execute()
+				_, _ = rawRepo.db.Delete("media_file_artists", dbx.HashExp{"media_file_id": songID}).Execute()
+				_, _ = rawRepo.db.Delete("media_file", dbx.HashExp{"id": songID}).Execute()
+			}
+			for _, artistID := range []string{soloArtistID, artistAID, artistBID} {
+				_, _ = rawRepo.db.Delete("artist", dbx.HashExp{"id": artistID}).Execute()
+			}
+			_, _ = rawRepo.db.Delete("user", dbx.HashExp{"id": userID}).Execute()
+		})
+
+		yearRange := func(year int) (time.Time, time.Time) {
+			return time.Date(year, 1, 1, 0, 0, 0, 0, time.UTC),
+				time.Date(year+1, 1, 1, 0, 0, 0, 0, time.UTC).Add(-time.Second)
+		}
+
+		Describe("TopSongs", func() {
+			It("orders by play count and computes approximate minutes, scoped to the date range", func() {
+				from, to := yearRange(2024)
+				songs, err := repo.TopSongs(from, to, 10)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(songs).To(HaveLen(3))
+
+				byID := map[string]model.TopSong{}
+				for _, s := range songs {
+					byID[s.MediaFileID] = s
+				}
+				Expect(songs[0].MediaFileID).To(Equal(soloSongID), "the twice-scrobbled song should be first")
+				Expect(byID[soloSongID].PlayCount).To(Equal(int64(2)))
+				Expect(byID[soloSongID].TotalMinutes).To(BeNumerically("~", 2*200.0/60.0, 0.001))
+				Expect(byID[duoSongID].PlayCount).To(Equal(int64(1)))
+				Expect(byID[duoSongID].TotalMinutes).To(BeNumerically("~", 100.0/60.0, 0.001))
+				Expect(byID[untaggedDuoSongID].PlayCount).To(Equal(int64(1)))
+				Expect(byID[untaggedDuoSongID].TotalMinutes).To(BeNumerically("~", 300.0/60.0, 0.001))
+			})
+		})
+
+		Describe("TopArtists", func() {
+			It("attributes each credited artist their own play count, without inflating a solo artist's count", func() {
+				from, to := yearRange(2024)
+				artists, err := repo.TopArtists(from, to, 10)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(artists).To(HaveLen(3))
+
+				byID := map[string]model.TopArtist{}
+				for _, a := range artists {
+					byID[a.ArtistID] = a
+				}
+				Expect(byID[soloArtistID].PlayCount).To(Equal(int64(3)), "2 plays of soloSong + 1 of duoSong")
+				Expect(byID[soloArtistID].TotalMinutes).To(BeNumerically("~", (2*200.0+100.0)/60.0, 0.001))
+				Expect(byID[artistAID].PlayCount).To(Equal(int64(1)))
+				Expect(byID[artistBID].PlayCount).To(Equal(int64(1)))
+			})
+		})
+
+		Describe("Summary", func() {
+			It("does not double-count a multi-artist track's play in the overall totals", func() {
+				from, to := yearRange(2024)
+				summary, err := repo.Summary(from, to)
+				Expect(err).ToNot(HaveOccurred())
+
+				// 2 (soloSong) + 1 (duoSong) + 1 (untaggedDuoSong) = 4 - NOT 5, even though
+				// untaggedDuoSong has 2 credited artists (that's the bug TopArtists's join
+				// would cause here if Summary reused it for the overall totals).
+				Expect(summary.PlayCount).To(Equal(int64(4)))
+				Expect(summary.TotalMinutes).To(BeNumerically("~", (2*200.0+100.0+300.0)/60.0, 0.001))
+				Expect(summary.UniqueSongs).To(Equal(int64(3)))
+				Expect(summary.UniqueArtists).To(Equal(int64(3)))
+			})
+
+			It("returns zeroes, not an error, for a range with no scrobbles", func() {
+				from, to := yearRange(1999)
+				summary, err := repo.Summary(from, to)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(summary).To(Equal(model.ListenSummary{}))
+			})
+		})
+
+		Describe("TasteProfile", func() {
+			It("averages only over tracks that have each tag, ignoring untagged tracks", func() {
+				from, to := yearRange(2024)
+				profile, err := repo.TasteProfile(from, to)
+				Expect(err).ToNot(HaveOccurred())
+
+				// acousticness: soloSong (0.2 x2 scrobbles) + duoSong (0.6 x1) = (0.2+0.2+0.6)/3
+				Expect(profile.Acousticness).ToNot(BeNil())
+				Expect(*profile.Acousticness).To(BeNumerically("~", (0.2+0.2+0.6)/3.0, 0.001))
+				// energy: only soloSong has it, both its scrobbles = 0.8
+				Expect(profile.Energy).ToNot(BeNil())
+				Expect(*profile.Energy).To(BeNumerically("~", 0.8, 0.001))
+				// no scrobbled track has danceability set
+				Expect(profile.Danceability).To(BeNil())
+				Expect(profile.TrackCount).To(Equal(int64(4)))
+			})
+
+			It("returns all-nil fields, not an error, for a range with no scrobbles", func() {
+				from, to := yearRange(1999)
+				profile, err := repo.TasteProfile(from, to)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(profile).To(Equal(model.TasteProfile{}))
+			})
+		})
+	})
+
 	Context("admin user (id userid)", func() {
 		BeforeEach(func() {
 			ctx = request.WithUser(log.NewContext(context.TODO()), adminUser)

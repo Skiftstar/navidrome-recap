@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -309,7 +310,29 @@ func osChildFromMediaFile(ctx context.Context, mf model.MediaFile) *responses.Op
 	child.Movements = slice.Map(mf.Movements(), func(m model.Movement) responses.Movement {
 		return responses.Movement{Name: m.Name, Number: m.Number, Count: m.Count}
 	})
+	child.Acousticness = firstFloat(mf.Tags, "acousticness")
+	child.Danceability = firstFloat(mf.Tags, "danceability")
+	child.Energy = firstFloat(mf.Tags, "energy")
+	child.Instrumentalness = firstFloat(mf.Tags, "instrumentalness")
+	child.Liveness = firstFloat(mf.Tags, "liveness")
+	child.Speechiness = firstFloat(mf.Tags, "speechiness")
+	child.Valence = firstFloat(mf.Tags, "valence")
 	return &child
+}
+
+// firstFloat parses the first value of a (possibly unconfigured, possibly
+// multi-valued) tag as a float64. Used for fork-only numeric tags, such as
+// the VibeNet audio-feature tags, that don't have a model.TagName constant.
+func firstFloat(tags model.Tags, name model.TagName) *float64 {
+	values := tags.Values(name)
+	if len(values) == 0 {
+		return nil
+	}
+	v, err := strconv.ParseFloat(values[0], 64)
+	if err != nil {
+		return nil
+	}
+	return &v
 }
 
 func artistRefs(participants model.ParticipantList) []responses.ArtistID3Ref {
