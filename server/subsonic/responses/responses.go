@@ -482,10 +482,11 @@ type RecapSummary struct {
 	UniqueArtists int64   `xml:"uniqueArtists,attr" json:"uniqueArtists"`
 }
 
+// RecapTopSong carries the full song info (same shape getSong.view returns,
+// via Child) alongside the recap-specific play stats - mirrors how
+// SonicMatch wraps a Child with an extra field for getSonicSimilarTracks.
 type RecapTopSong struct {
-	MediaFileId  string  `xml:"mediaFileId,attr"  json:"mediaFileId"`
-	Title        string  `xml:"title,attr"        json:"title"`
-	Artist       string  `xml:"artist,attr"       json:"artist"`
+	Entry        Child   `xml:"entry"             json:"entry"`
 	PlayCount    int64   `xml:"playCount,attr"    json:"playCount"`
 	TotalMinutes float64 `xml:"totalMinutes,attr" json:"totalMinutes"`
 }

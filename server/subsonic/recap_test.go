@@ -1,6 +1,7 @@
 package subsonic
 
 import (
+	"context"
 	"strconv"
 	"time"
 
@@ -28,6 +29,9 @@ var _ = Describe("GetRecap", func() {
 		repo.TopArtistsResult = []model.TopArtist{{ArtistID: "a1", Name: "Solo Artist", PlayCount: 3, TotalMinutes: 8.3}}
 		repo.TasteProfileResult = model.TasteProfile{Energy: &energy, TrackCount: 4}
 
+		mfRepo := ds.MediaFile(context.Background()).(*tests.MockMediaFileRepo)
+		Expect(mfRepo.Put(&model.MediaFile{ID: "s1", Title: "Song 1", Artist: "Solo Artist", Album: "Album 1"})).To(Succeed())
+
 		r := newGetRequest("from=2024-01-01T00:00:00Z", "to=2024-12-31T23:59:59Z")
 		resp, err := router.GetRecap(r)
 
@@ -40,11 +44,25 @@ var _ = Describe("GetRecap", func() {
 		Expect(resp.Recap.Summary.PlayCount).To(Equal(int64(4)))
 		Expect(resp.Recap.Summary.UniqueArtists).To(Equal(int64(3)))
 		Expect(resp.Recap.TopSongs).To(HaveLen(1))
-		Expect(resp.Recap.TopSongs[0].MediaFileId).To(Equal("s1"))
+		Expect(resp.Recap.TopSongs[0].Entry.Id).To(Equal("s1"))
+		Expect(resp.Recap.TopSongs[0].Entry.Title).To(Equal("Song 1"))
+		Expect(resp.Recap.TopSongs[0].Entry.Album).To(Equal("Album 1"))
+		Expect(resp.Recap.TopSongs[0].PlayCount).To(Equal(int64(2)))
+		Expect(resp.Recap.TopSongs[0].TotalMinutes).To(Equal(6.7))
 		Expect(resp.Recap.TopArtists).To(HaveLen(1))
 		Expect(resp.Recap.TopArtists[0].ArtistId).To(Equal("a1"))
 		Expect(resp.Recap.TasteProfile.Energy).To(Equal(&energy))
 		Expect(resp.Recap.TasteProfile.Danceability).To(BeNil())
+	})
+
+	It("omits a top song whose MediaFile is no longer found (e.g. purged since the scrobble was recorded)", func() {
+		repo.TopSongsResult = []model.TopSong{{MediaFileID: "missing", Title: "Gone", PlayCount: 1, TotalMinutes: 1}}
+
+		r := newGetRequest()
+		resp, err := router.GetRecap(r)
+
+		Expect(err).ToNot(HaveOccurred())
+		Expect(resp.Recap.TopSongs).To(BeEmpty())
 	})
 
 	It("honors a count param, capped at maxRecapLimit", func() {

@@ -1,10 +1,12 @@
 package subsonic
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"time"
 
+	. "github.com/Masterminds/squirrel"
 	"github.com/navidrome/navidrome/model"
 	"github.com/navidrome/navidrome/server/subsonic/responses"
 	"github.com/navidrome/navidrome/utils/req"
@@ -91,14 +93,39 @@ func (api *Router) GetRecap(r *http.Request) (*responses.Subsonic, error) {
 		return nil, err
 	}
 
+	topSongsResp, err := recapTopSongsResponse(ctx, api.ds, topSongs)
+	if err != nil {
+		return nil, err
+	}
+
 	response := newResponse()
 	response.Recap = &responses.Recap{
 		Summary:      recapSummaryResponse(summary),
-		TopSongs:     recapTopSongsResponse(topSongs),
+		TopSongs:     topSongsResp,
 		TopArtists:   recapTopArtistsResponse(topArtists),
 		TasteProfile: recapTasteProfileResponse(taste),
 	}
 	return response, nil
+}
+
+// loadMediaFilesByID fetches the MediaFiles for the given IDs, keyed by ID.
+// Order is restored by the caller, which already has the ranked ID list from
+// TopSongs. IDs with no matching row (e.g. purged since the scrobble was
+// recorded) are simply absent from the result - mirrors the existing
+// playQueueRepository.loadTracks pattern (persistence/playqueue_repository.go).
+func loadMediaFilesByID(ctx context.Context, ds model.DataStore, ids []string) (map[string]model.MediaFile, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	mfs, err := ds.MediaFile(ctx).GetAll(model.QueryOptions{Filters: Eq{"media_file.id": ids}})
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]model.MediaFile, len(mfs))
+	for _, mf := range mfs {
+		byID[mf.ID] = mf
+	}
+	return byID, nil
 }
 
 func recapSummaryResponse(s model.ListenSummary) responses.RecapSummary {
@@ -110,18 +137,32 @@ func recapSummaryResponse(s model.ListenSummary) responses.RecapSummary {
 	}
 }
 
-func recapTopSongsResponse(songs []model.TopSong) responses.Array[responses.RecapTopSong] {
-	resp := make(responses.Array[responses.RecapTopSong], len(songs))
+// recapTopSongsResponse hydrates each TopSong's MediaFileID into a full
+// Child (same info getSong.view returns) via childFromMediaFile, preserving
+// TopSongs' ranked order. A song whose MediaFile is no longer found (purged
+// since the scrobble was recorded) is silently omitted, not errored.
+func recapTopSongsResponse(ctx context.Context, ds model.DataStore, songs []model.TopSong) (responses.Array[responses.RecapTopSong], error) {
+	ids := make([]string, len(songs))
 	for i, s := range songs {
-		resp[i] = responses.RecapTopSong{
-			MediaFileId:  s.MediaFileID,
-			Title:        s.Title,
-			Artist:       s.Artist,
+		ids[i] = s.MediaFileID
+	}
+	byID, err := loadMediaFilesByID(ctx, ds, ids)
+	if err != nil {
+		return nil, err
+	}
+	resp := make(responses.Array[responses.RecapTopSong], 0, len(songs))
+	for _, s := range songs {
+		mf, ok := byID[s.MediaFileID]
+		if !ok {
+			continue
+		}
+		resp = append(resp, responses.RecapTopSong{
+			Entry:        childFromMediaFile(ctx, mf),
 			PlayCount:    s.PlayCount,
 			TotalMinutes: s.TotalMinutes,
-		}
+		})
 	}
-	return resp
+	return resp, nil
 }
 
 func recapTopArtistsResponse(artists []model.TopArtist) responses.Array[responses.RecapTopArtist] {
