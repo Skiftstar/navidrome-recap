@@ -2,6 +2,7 @@ package subsonic
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/navidrome/navidrome/model"
@@ -14,16 +15,39 @@ const (
 	maxRecapLimit     = 100
 )
 
-// recapYearRange resolves the [from, to] window for a getRecap request from
-// its "year" param (Jan 1 00:00:00 - Dec 31 23:59:59 UTC of that year),
-// defaulting to the current year when omitted. Mirrors
-// server/nativeapi/stats.go's parseStatsRange, kept separate since the two
-// packages don't share request-parsing helpers.
-func recapYearRange(p *req.Values) (from, to time.Time) {
-	year := p.IntOr("year", time.Now().UTC().Year())
-	from = time.Date(year, 1, 1, 0, 0, 0, 0, time.UTC)
-	to = time.Date(year+1, 1, 1, 0, 0, 0, 0, time.UTC).Add(-time.Second)
+// recapDateRange resolves the [from, to] window for a getRecap request from
+// its "from"/"to" params (RFC3339, e.g. 2026-01-01T00:00:00Z, or unix
+// seconds; want a full year? pass from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z).
+// An omitted "from" defaults to the zero time.Time (unbounded start - always
+// <= any real submission_time, so it behaves as "since the beginning"). An
+// omitted "to" defaults to now, *not* the zero time.Time - the zero time is
+// year 1, and used as an upper bound that would match nothing. With both
+// omitted, the range is "everything so far".
+//
+// Mirrors server/nativeapi/stats.go's parseStatsRange, kept separate since
+// the two packages don't share request-parsing helpers.
+func recapDateRange(p *req.Values) (from, to time.Time, err error) {
+	if fromStr := p.StringOr("from", ""); fromStr != "" {
+		if from, err = recapParseTime(fromStr); err != nil {
+			return
+		}
+	}
+	if toStr := p.StringOr("to", ""); toStr != "" {
+		to, err = recapParseTime(toStr)
+	} else {
+		to = time.Now().UTC()
+	}
 	return
+}
+
+func recapParseTime(s string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, nil
+	}
+	if unix, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return time.Unix(unix, 0).UTC(), nil
+	}
+	return time.Parse(time.RFC3339, s)
 }
 
 func recapLimit(p *req.Values) int {
@@ -42,7 +66,10 @@ func recapLimit(p *req.Values) int {
 func (api *Router) GetRecap(r *http.Request) (*responses.Subsonic, error) {
 	ctx := r.Context()
 	p := req.Params(r)
-	from, to := recapYearRange(p)
+	from, to, err := recapDateRange(p)
+	if err != nil {
+		return nil, newError(responses.ErrorGeneric, "invalid from/to: %s", err)
+	}
 	limit := recapLimit(p)
 
 	repo := api.ds.Scrobble(ctx)

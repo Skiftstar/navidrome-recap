@@ -1,6 +1,7 @@
 package subsonic
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/navidrome/navidrome/model"
@@ -20,14 +21,14 @@ var _ = Describe("GetRecap", func() {
 		router = New(ds, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	})
 
-	It("resolves ?year= to Jan 1 - Dec 31 UTC and combines summary/topSongs/topArtists/tasteProfile into one payload", func() {
+	It("resolves explicit from/to and combines summary/topSongs/topArtists/tasteProfile into one payload", func() {
 		energy := 0.8
 		repo.SummaryResult = model.ListenSummary{PlayCount: 4, TotalMinutes: 13.3, UniqueSongs: 3, UniqueArtists: 3}
 		repo.TopSongsResult = []model.TopSong{{MediaFileID: "s1", Title: "Song 1", Artist: "Solo Artist", PlayCount: 2, TotalMinutes: 6.7}}
 		repo.TopArtistsResult = []model.TopArtist{{ArtistID: "a1", Name: "Solo Artist", PlayCount: 3, TotalMinutes: 8.3}}
 		repo.TasteProfileResult = model.TasteProfile{Energy: &energy, TrackCount: 4}
 
-		r := newGetRequest("year=2024")
+		r := newGetRequest("from=2024-01-01T00:00:00Z", "to=2024-12-31T23:59:59Z")
 		resp, err := router.GetRecap(r)
 
 		Expect(err).ToNot(HaveOccurred())
@@ -47,18 +48,71 @@ var _ = Describe("GetRecap", func() {
 	})
 
 	It("honors a count param, capped at maxRecapLimit", func() {
-		r := newGetRequest("year=2024", "count=500")
+		r := newGetRequest("count=500")
 		_, err := router.GetRecap(r)
 
 		Expect(err).ToNot(HaveOccurred())
 		Expect(repo.LastLimit).To(Equal(maxRecapLimit))
 	})
 
-	It("defaults to the current year when no year is given", func() {
+	It("defaults to all-time (from zero to now) when no range is given", func() {
+		before := time.Now().UTC()
 		r := newGetRequest()
 		_, err := router.GetRecap(r)
 
 		Expect(err).ToNot(HaveOccurred())
-		Expect(repo.LastFrom.Year()).To(Equal(time.Now().UTC().Year()))
+		Expect(repo.LastFrom.IsZero()).To(BeTrue())
+		Expect(repo.LastTo).To(BeTemporally(">=", before))
+		Expect(repo.LastTo).To(BeTemporally("<=", time.Now().UTC()))
+	})
+
+	It("uses explicit from/to", func() {
+		r := newGetRequest("from=2024-03-01T00:00:00Z", "to=2024-03-31T23:59:59Z")
+		_, err := router.GetRecap(r)
+
+		Expect(err).ToNot(HaveOccurred())
+		Expect(repo.LastFrom).To(Equal(time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)))
+		Expect(repo.LastTo).To(Equal(time.Date(2024, 3, 31, 23, 59, 59, 0, time.UTC)))
+	})
+
+	It("accepts from/to as unix seconds", func() {
+		from := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+		to := time.Date(2024, 6, 30, 0, 0, 0, 0, time.UTC)
+		r := newGetRequest(
+			"from="+strconv.FormatInt(from.Unix(), 10),
+			"to="+strconv.FormatInt(to.Unix(), 10),
+		)
+		_, err := router.GetRecap(r)
+
+		Expect(err).ToNot(HaveOccurred())
+		Expect(repo.LastFrom).To(Equal(from))
+		Expect(repo.LastTo).To(Equal(to))
+	})
+
+	It("defaults an omitted 'to' to now, not the zero time (which would match nothing as an upper bound)", func() {
+		before := time.Now().UTC()
+		r := newGetRequest("from=2024-01-01T00:00:00Z")
+		_, err := router.GetRecap(r)
+
+		Expect(err).ToNot(HaveOccurred())
+		Expect(repo.LastFrom).To(Equal(time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)))
+		Expect(repo.LastTo).To(BeTemporally(">=", before))
+		Expect(repo.LastTo).To(BeTemporally("<=", time.Now().UTC()))
+	})
+
+	It("defaults an omitted 'from' to the zero time (unbounded start)", func() {
+		r := newGetRequest("to=2024-12-31T23:59:59Z")
+		_, err := router.GetRecap(r)
+
+		Expect(err).ToNot(HaveOccurred())
+		Expect(repo.LastFrom.IsZero()).To(BeTrue())
+		Expect(repo.LastTo).To(Equal(time.Date(2024, 12, 31, 23, 59, 59, 0, time.UTC)))
+	})
+
+	It("returns an error for an unparsable from/to", func() {
+		r := newGetRequest("from=not-a-date")
+		_, err := router.GetRecap(r)
+
+		Expect(err).To(HaveOccurred())
 	})
 })

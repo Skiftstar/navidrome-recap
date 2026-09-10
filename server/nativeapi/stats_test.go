@@ -35,10 +35,10 @@ var _ = Describe("Stats/Recap Endpoints", func() {
 	}
 
 	Describe("GET /stats/summary", func() {
-		It("resolves a ?year= param to Jan 1 - Dec 31 UTC and returns the summary as JSON", func() {
+		It("resolves explicit from/to and returns the summary as JSON", func() {
 			repo.SummaryResult = model.ListenSummary{PlayCount: 42, TotalMinutes: 123.5, UniqueSongs: 10, UniqueArtists: 5}
 
-			req := newRequest("/stats/summary?year=2024")
+			req := newRequest("/stats/summary?from=2024-01-01T00:00:00Z&to=2024-12-31T23:59:59Z")
 			w := httptest.NewRecorder()
 			statsSummary(ds)(w, req)
 
@@ -51,13 +51,16 @@ var _ = Describe("Stats/Recap Endpoints", func() {
 			Expect(got).To(Equal(repo.SummaryResult))
 		})
 
-		It("defaults to the current year when no range is given", func() {
+		It("defaults to all-time (from zero to now) when no range is given", func() {
+			before := time.Now().UTC()
 			req := newRequest("/stats/summary")
 			w := httptest.NewRecorder()
 			statsSummary(ds)(w, req)
 
 			Expect(w.Code).To(Equal(http.StatusOK))
-			Expect(repo.LastFrom.Year()).To(Equal(time.Now().UTC().Year()))
+			Expect(repo.LastFrom.IsZero()).To(BeTrue())
+			Expect(repo.LastTo).To(BeTemporally(">=", before))
+			Expect(repo.LastTo).To(BeTemporally("<=", time.Now().UTC()))
 		})
 	})
 
@@ -65,7 +68,7 @@ var _ = Describe("Stats/Recap Endpoints", func() {
 		It("passes the limit query param through, capped at maxStatsLimit", func() {
 			repo.TopSongsResult = []model.TopSong{{MediaFileID: "s1", Title: "Song", PlayCount: 3}}
 
-			req := newRequest("/stats/top-songs?year=2024&limit=500")
+			req := newRequest("/stats/top-songs?limit=500")
 			w := httptest.NewRecorder()
 			topSongs(ds)(w, req)
 
@@ -78,7 +81,7 @@ var _ = Describe("Stats/Recap Endpoints", func() {
 		})
 
 		It("defaults the limit when not given", func() {
-			req := newRequest("/stats/top-songs?year=2024")
+			req := newRequest("/stats/top-songs")
 			w := httptest.NewRecorder()
 			topSongs(ds)(w, req)
 
@@ -91,7 +94,7 @@ var _ = Describe("Stats/Recap Endpoints", func() {
 		It("returns the top artists as JSON", func() {
 			repo.TopArtistsResult = []model.TopArtist{{ArtistID: "a1", Name: "Artist", PlayCount: 7}}
 
-			req := newRequest("/stats/top-artists?year=2024")
+			req := newRequest("/stats/top-artists")
 			w := httptest.NewRecorder()
 			topArtists(ds)(w, req)
 
@@ -107,7 +110,7 @@ var _ = Describe("Stats/Recap Endpoints", func() {
 			energy := 0.8
 			repo.TasteProfileResult = model.TasteProfile{Energy: &energy, TrackCount: 12}
 
-			req := newRequest("/stats/taste-profile?year=2024")
+			req := newRequest("/stats/taste-profile")
 			w := httptest.NewRecorder()
 			tasteProfile(ds)(w, req)
 
@@ -119,7 +122,7 @@ var _ = Describe("Stats/Recap Endpoints", func() {
 	})
 
 	Describe("explicit from/to range", func() {
-		It("uses RFC3339 from/to instead of year when given", func() {
+		It("resolves RFC3339 from/to", func() {
 			req := newRequest("/stats/summary?from=2024-03-01T00:00:00Z&to=2024-03-31T23:59:59Z")
 			w := httptest.NewRecorder()
 			statsSummary(ds)(w, req)
@@ -135,6 +138,28 @@ var _ = Describe("Stats/Recap Endpoints", func() {
 			statsSummary(ds)(w, req)
 
 			Expect(w.Code).To(Equal(http.StatusBadRequest))
+		})
+
+		It("defaults an omitted 'to' to now, not the zero time (which would match nothing as an upper bound)", func() {
+			before := time.Now().UTC()
+			req := newRequest("/stats/summary?from=2024-01-01T00:00:00Z")
+			w := httptest.NewRecorder()
+			statsSummary(ds)(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusOK))
+			Expect(repo.LastFrom).To(Equal(time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)))
+			Expect(repo.LastTo).To(BeTemporally(">=", before))
+			Expect(repo.LastTo).To(BeTemporally("<=", time.Now().UTC()))
+		})
+
+		It("defaults an omitted 'from' to the zero time (unbounded start)", func() {
+			req := newRequest("/stats/summary?to=2024-12-31T23:59:59Z")
+			w := httptest.NewRecorder()
+			statsSummary(ds)(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusOK))
+			Expect(repo.LastFrom.IsZero()).To(BeTrue())
+			Expect(repo.LastTo).To(Equal(time.Date(2024, 12, 31, 23, 59, 59, 0, time.UTC)))
 		})
 	})
 })

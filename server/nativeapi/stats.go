@@ -15,30 +15,25 @@ const (
 	maxStatsLimit     = 100
 )
 
-// parseStatsRange resolves the [from, to] window for a recap/stats request.
-// - "year" (e.g. ?year=2026) resolves to Jan 1 00:00:00 - Dec 31 23:59:59 UTC of that year.
-// - "from"/"to" (RFC3339, or unix seconds) are used verbatim if given, instead of "year".
-// - with neither, defaults to the current year.
+// parseStatsRange resolves the [from, to] window for a recap/stats request
+// from its "from"/"to" query params (RFC3339, or unix seconds; want a full
+// year? pass from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z). An omitted
+// "from" defaults to the zero time.Time (unbounded start). An omitted "to"
+// defaults to now, *not* the zero time.Time - the zero time is year 1, and
+// used as an upper bound that would match nothing. With both omitted, the
+// range is "everything so far".
 func parseStatsRange(r *http.Request) (from, to time.Time, err error) {
 	q := r.URL.Query()
-	if f, t := q.Get("from"), q.Get("to"); f != "" || t != "" {
-		from, err = parseStatsTime(f)
-		if err != nil {
+	if f := q.Get("from"); f != "" {
+		if from, err = parseStatsTime(f); err != nil {
 			return
 		}
+	}
+	if t := q.Get("to"); t != "" {
 		to, err = parseStatsTime(t)
-		return
+	} else {
+		to = time.Now().UTC()
 	}
-
-	year := time.Now().UTC().Year()
-	if y := q.Get("year"); y != "" {
-		year, err = strconv.Atoi(y)
-		if err != nil {
-			return
-		}
-	}
-	from = time.Date(year, 1, 1, 0, 0, 0, 0, time.UTC)
-	to = time.Date(year+1, 1, 1, 0, 0, 0, 0, time.UTC).Add(-time.Second)
 	return
 }
 
