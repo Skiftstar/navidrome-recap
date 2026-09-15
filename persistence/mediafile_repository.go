@@ -276,6 +276,30 @@ func euclideanDistance(a, b [7]float64) float64 {
 	return math.Sqrt(sum)
 }
 
+// vibeCandidate is the lightweight row shape used to scan the whole library
+// for vibe-similarity candidates: just enough to compute a distance, without
+// paying for the annotation/bookmark joins or artwork hydration that
+// GetAll's full selectMediaFile pulls in - those only matter for the
+// handful of winning results, hydrated separately afterward.
+type vibeCandidate struct {
+	ID   string `db:"id"`
+	Tags string `db:"tags"`
+}
+
+// vibeCandidates scans the (library-scoped) media_file table for rows that
+// might have VibeNet tags, returning just their id and raw tags column. The
+// Like prefilter is a cheap skip for tracks that clearly have none - it's
+// not the actual distance computation, which still needs all 7 tags per
+// candidate and happens in SimilarByVibe. See the plan for why the distance
+// itself isn't pushed into SQL too.
+func (r *mediaFileRepository) vibeCandidates(excludeID string) ([]vibeCandidate, error) {
+	sq := r.applyLibraryFilter(r.newSelect().Columns("media_file.id", "media_file.tags")).
+		Where(And{NotEq{"media_file.id": excludeID}, Like{"media_file.tags": "%acousticness%"}})
+	var rows []vibeCandidate
+	err := r.queryAll(sq, &rows)
+	return rows, err
+}
+
 func (r *mediaFileRepository) SimilarByVibe(id string, count int) ([]model.VibeSimilarity, error) {
 	seed, err := r.Get(id)
 	if err != nil {
@@ -286,31 +310,60 @@ func (r *mediaFileRepository) SimilarByVibe(id string, count int) ([]model.VibeS
 		return nil, nil
 	}
 
-	// The Like prefilter is a cheap pre-hydration skip for tracks that
-	// clearly have no VibeNet data at all (avoids the full unmarshal/scan
-	// cost of GetAll for the rest of the library) - it's not the actual
-	// distance computation, which still needs all 7 tags per candidate and
-	// happens below in Go. See the plan for why this isn't pushed into SQL.
-	candidates, err := r.GetAll(model.QueryOptions{
-		Filters: And{NotEq{"media_file.id": id}, Like{"media_file.tags": "%acousticness%"}},
-	})
+	rows, err := r.vibeCandidates(id)
 	if err != nil {
 		return nil, err
 	}
 
-	var results []model.VibeSimilarity
-	for _, mf := range candidates {
-		vec, ok := vibeVector(mf.Tags)
+	type scoredID struct {
+		id       string
+		distance float64
+	}
+	var scored []scoredID
+	for _, row := range rows {
+		tags, err := unmarshalTags(row.Tags)
+		if err != nil {
+			continue // malformed tags on this one row - skip it, not the whole request
+		}
+		vec, ok := vibeVector(tags)
 		if !ok {
 			continue
 		}
-		results = append(results, model.VibeSimilarity{MediaFile: mf, Distance: euclideanDistance(seedVec, vec)})
+		scored = append(scored, scoredID{id: row.ID, distance: euclideanDistance(seedVec, vec)})
 	}
-	slices.SortFunc(results, func(a, b model.VibeSimilarity) int {
-		return cmp.Compare(a.Distance, b.Distance)
+	slices.SortFunc(scored, func(a, b scoredID) int {
+		return cmp.Compare(a.distance, b.distance)
 	})
-	if len(results) > count {
-		results = results[:count]
+	if len(scored) > count {
+		scored = scored[:count]
+	}
+	if len(scored) == 0 {
+		return nil, nil
+	}
+
+	// Only the winners get the full GetAll treatment (annotation/bookmark
+	// joins, artwork) - childFromMediaFile needs a real, complete MediaFile,
+	// but only for these few, not the whole candidate set scanned above.
+	ids := make([]string, len(scored))
+	for i, s := range scored {
+		ids[i] = s.id
+	}
+	winners, err := r.GetAll(model.QueryOptions{Filters: Eq{"media_file.id": ids}})
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]model.MediaFile, len(winners))
+	for _, mf := range winners {
+		byID[mf.ID] = mf
+	}
+
+	results := make([]model.VibeSimilarity, 0, len(scored))
+	for _, s := range scored {
+		mf, ok := byID[s.id]
+		if !ok {
+			continue // gone between the two queries (e.g. deleted mid-request) - skip, don't fail
+		}
+		results = append(results, model.VibeSimilarity{MediaFile: mf, Distance: s.distance})
 	}
 	return results, nil
 }
