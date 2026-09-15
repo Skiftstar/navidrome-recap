@@ -313,11 +313,24 @@ func (mf MediaFile) inferCodecFromSuffix() string {
 
 type MediaFiles []MediaFile
 
-// VibeSimilarity is one result of MediaFileRepository.SimilarByVibe.
-// Distance is the Euclidean distance between the seed track's and this
-// track's VibeNet audio-feature vectors - lower is more similar, 0 is
-// identical. Only computed over tracks (seed and candidate both) that have
-// all 7 VibeNet tags set.
+// VibeProfile is a VibeNet audio-feature vector, used as the seed for
+// MediaFileRepository.SimilarByVibeProfile - either derived from an
+// existing track's tags (GetVibeProfile), or supplied directly (e.g. the
+// average profile of a playlist/queue).
+type VibeProfile struct {
+	Acousticness     float64
+	Danceability     float64
+	Energy           float64
+	Instrumentalness float64
+	Liveness         float64
+	Speechiness      float64
+	Valence          float64
+}
+
+// VibeSimilarity is one result of MediaFileRepository.SimilarByVibeProfile.
+// Distance is the Euclidean distance between the seed VibeProfile and this
+// track's own VibeNet audio-feature vector - lower is more similar, 0 is
+// identical. Only computed over candidates that have all 7 VibeNet tags set.
 type VibeSimilarity struct {
 	MediaFile MediaFile
 	Distance  float64
@@ -573,12 +586,14 @@ type MediaFileRepository interface {
 	DeleteMissing(ids []string) error
 	DeleteAllMissing() (int64, error)
 	FindByPaths(paths []string) (MediaFiles, error)
-	// SimilarByVibe returns up to count tracks most similar to id by Euclidean
-	// distance across the VibeNet audio-feature tags (acousticness,
-	// danceability, energy, instrumentalness, liveness, speechiness, valence).
-	// Only candidates with all 7 tags set are considered; if the seed track
-	// itself lacks any of them, returns an empty result, not an error.
-	SimilarByVibe(id string, count int) ([]VibeSimilarity, error)
+	// GetVibeProfile returns the given track's VibeProfile. ok is false if the
+	// track doesn't have all 7 VibeNet tags set (not an error).
+	GetVibeProfile(id string) (profile VibeProfile, ok bool, err error)
+	// SimilarByVibeProfile returns up to count tracks most similar to profile
+	// by Euclidean distance across the VibeNet audio-feature tags, excluding
+	// any track whose ID is in exclude. Only candidates with all 7 tags set
+	// are considered.
+	SimilarByVibeProfile(profile VibeProfile, exclude []string, count int) ([]VibeSimilarity, error)
 
 	// The following methods are used exclusively by the scanner:
 	MarkMissing(bool, ...*MediaFile) error

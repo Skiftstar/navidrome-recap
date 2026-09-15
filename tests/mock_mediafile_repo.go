@@ -34,10 +34,15 @@ type MockMediaFileRepo struct {
 	FindRecentFilesByPropertiesFunc func(missing model.MediaFile, since time.Time) (model.MediaFiles, error)
 	MatchesCriteriaValue            bool
 	MatchesCriteriaErr              error
-	// SimilarByVibeResult is a canned result for tests - not derived from Data.
-	SimilarByVibeResult []model.VibeSimilarity
-	// SimilarByVibeLastCount records the count SimilarByVibe was last called with.
-	SimilarByVibeLastCount int
+	// GetVibeProfileResult/GetVibeProfileOK are canned results for tests - not derived from Data.
+	GetVibeProfileResult model.VibeProfile
+	GetVibeProfileOK     bool
+	// SimilarByVibeProfileResult is a canned result for tests - not derived from Data.
+	SimilarByVibeProfileResult []model.VibeSimilarity
+	// SimilarByVibeProfileLast* record the args SimilarByVibeProfile was last called with.
+	SimilarByVibeProfileLastProfile model.VibeProfile
+	SimilarByVibeProfileLastExclude []string
+	SimilarByVibeProfileLastCount   int
 }
 
 func (m *MockMediaFileRepo) SetError(err bool) {
@@ -134,12 +139,21 @@ func (m *MockMediaFileRepo) GetCursorWithArtwork(qo ...model.QueryOptions) (mode
 	return m.GetCursor(qo...)
 }
 
-func (m *MockMediaFileRepo) SimilarByVibe(_ string, count int) ([]model.VibeSimilarity, error) {
-	m.SimilarByVibeLastCount = count
+func (m *MockMediaFileRepo) GetVibeProfile(_ string) (model.VibeProfile, bool, error) {
+	if m.Err {
+		return model.VibeProfile{}, false, errors.New("error")
+	}
+	return m.GetVibeProfileResult, m.GetVibeProfileOK, nil
+}
+
+func (m *MockMediaFileRepo) SimilarByVibeProfile(profile model.VibeProfile, exclude []string, count int) ([]model.VibeSimilarity, error) {
+	m.SimilarByVibeProfileLastProfile = profile
+	m.SimilarByVibeProfileLastExclude = exclude
+	m.SimilarByVibeProfileLastCount = count
 	if m.Err {
 		return nil, errors.New("error")
 	}
-	return m.SimilarByVibeResult, nil
+	return m.SimilarByVibeProfileResult, nil
 }
 
 func (m *MockMediaFileRepo) Put(mf *model.MediaFile) error {

@@ -240,40 +240,65 @@ func (r *mediaFileRepository) hydrateArtwork(mfs model.MediaFiles) {
 	hydrateMediaFileArtwork(r.ctx, r.db, mfs)
 }
 
-// vibeNetTags are the VibeNet audio-feature tags used by SimilarByVibe -
-// see resources/mappings.yaml docs / conf.Server.Tags for how they get
-// populated into a track's Tags.
-var vibeNetTags = []model.TagName{
-	"acousticness", "danceability", "energy", "instrumentalness",
-	"liveness", "speechiness", "valence",
-}
-
-// vibeVector extracts all 7 VibeNet tag values as floats, or ok=false if any
-// are missing or unparseable. Deliberately all-or-nothing: VibeNet always
-// writes all 7 together, and requiring the full set keeps every computed
-// distance comparable, rather than allowing partial-dimension comparisons.
-func vibeVector(tags model.Tags) (vec [7]float64, ok bool) {
-	for i, tag := range vibeNetTags {
+// vibeProfileFromTags extracts all 7 VibeNet tag values into a
+// model.VibeProfile, or ok=false if any are missing or unparseable.
+// Deliberately all-or-nothing: VibeNet always writes all 7 together, and
+// requiring the full set keeps every computed distance comparable, rather
+// than allowing partial-dimension comparisons. See resources/mappings.yaml
+// docs / conf.Server.Tags for how these get populated into a track's Tags.
+func vibeProfileFromTags(tags model.Tags) (model.VibeProfile, bool) {
+	get := func(tag model.TagName) (float64, bool) {
 		values := tags.Values(tag)
 		if len(values) == 0 {
-			return vec, false
+			return 0, false
 		}
 		f, err := strconv.ParseFloat(values[0], 64)
-		if err != nil {
-			return vec, false
-		}
-		vec[i] = f
+		return f, err == nil
 	}
-	return vec, true
+	var p model.VibeProfile
+	var ok bool
+	if p.Acousticness, ok = get("acousticness"); !ok {
+		return model.VibeProfile{}, false
+	}
+	if p.Danceability, ok = get("danceability"); !ok {
+		return model.VibeProfile{}, false
+	}
+	if p.Energy, ok = get("energy"); !ok {
+		return model.VibeProfile{}, false
+	}
+	if p.Instrumentalness, ok = get("instrumentalness"); !ok {
+		return model.VibeProfile{}, false
+	}
+	if p.Liveness, ok = get("liveness"); !ok {
+		return model.VibeProfile{}, false
+	}
+	if p.Speechiness, ok = get("speechiness"); !ok {
+		return model.VibeProfile{}, false
+	}
+	if p.Valence, ok = get("valence"); !ok {
+		return model.VibeProfile{}, false
+	}
+	return p, true
 }
 
-func euclideanDistance(a, b [7]float64) float64 {
-	var sum float64
-	for i := range a {
-		d := a[i] - b[i]
-		sum += d * d
+func euclideanDistance(a, b model.VibeProfile) float64 {
+	sq := func(x, y float64) float64 {
+		d := x - y
+		return d * d
 	}
+	sum := sq(a.Acousticness, b.Acousticness) + sq(a.Danceability, b.Danceability) +
+		sq(a.Energy, b.Energy) + sq(a.Instrumentalness, b.Instrumentalness) +
+		sq(a.Liveness, b.Liveness) + sq(a.Speechiness, b.Speechiness) + sq(a.Valence, b.Valence)
 	return math.Sqrt(sum)
+}
+
+func (r *mediaFileRepository) GetVibeProfile(id string) (model.VibeProfile, bool, error) {
+	mf, err := r.Get(id)
+	if err != nil {
+		return model.VibeProfile{}, false, err
+	}
+	profile, ok := vibeProfileFromTags(mf.Tags)
+	return profile, ok, nil
 }
 
 // vibeCandidate is the lightweight row shape used to scan the whole library
@@ -287,30 +312,24 @@ type vibeCandidate struct {
 }
 
 // vibeCandidates scans the (library-scoped) media_file table for rows that
-// might have VibeNet tags, returning just their id and raw tags column. The
-// Like prefilter is a cheap skip for tracks that clearly have none - it's
-// not the actual distance computation, which still needs all 7 tags per
-// candidate and happens in SimilarByVibe. See the plan for why the distance
-// itself isn't pushed into SQL too.
-func (r *mediaFileRepository) vibeCandidates(excludeID string) ([]vibeCandidate, error) {
+// might have VibeNet tags, excluding the given IDs, and returning just their
+// id and raw tags column. The Like prefilter is a cheap skip for tracks
+// that clearly have none - it's not the actual distance computation, which
+// still needs all 7 tags per candidate and happens in SimilarByVibeProfile.
+// See the plan for why the distance itself isn't pushed into SQL too.
+func (r *mediaFileRepository) vibeCandidates(exclude []string) ([]vibeCandidate, error) {
 	sq := r.applyLibraryFilter(r.newSelect().Columns("media_file.id", "media_file.tags")).
-		Where(And{NotEq{"media_file.id": excludeID}, Like{"media_file.tags": "%acousticness%"}})
+		Where(Like{"media_file.tags": "%acousticness%"})
+	if len(exclude) > 0 {
+		sq = sq.Where(NotEq{"media_file.id": exclude})
+	}
 	var rows []vibeCandidate
 	err := r.queryAll(sq, &rows)
 	return rows, err
 }
 
-func (r *mediaFileRepository) SimilarByVibe(id string, count int) ([]model.VibeSimilarity, error) {
-	seed, err := r.Get(id)
-	if err != nil {
-		return nil, err
-	}
-	seedVec, ok := vibeVector(seed.Tags)
-	if !ok {
-		return nil, nil
-	}
-
-	rows, err := r.vibeCandidates(id)
+func (r *mediaFileRepository) SimilarByVibeProfile(profile model.VibeProfile, exclude []string, count int) ([]model.VibeSimilarity, error) {
+	rows, err := r.vibeCandidates(exclude)
 	if err != nil {
 		return nil, err
 	}
@@ -325,11 +344,11 @@ func (r *mediaFileRepository) SimilarByVibe(id string, count int) ([]model.VibeS
 		if err != nil {
 			continue // malformed tags on this one row - skip it, not the whole request
 		}
-		vec, ok := vibeVector(tags)
+		vec, ok := vibeProfileFromTags(tags)
 		if !ok {
 			continue
 		}
-		scored = append(scored, scoredID{id: row.ID, distance: euclideanDistance(seedVec, vec)})
+		scored = append(scored, scoredID{id: row.ID, distance: euclideanDistance(profile, vec)})
 	}
 	slices.SortFunc(scored, func(a, b scoredID) int {
 		return cmp.Compare(a.distance, b.distance)
