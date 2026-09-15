@@ -1,10 +1,12 @@
 package persistence
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"iter"
 	"maps"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -236,6 +238,81 @@ func (r *mediaFileRepository) GetAll(options ...model.QueryOptions) (model.Media
 
 func (r *mediaFileRepository) hydrateArtwork(mfs model.MediaFiles) {
 	hydrateMediaFileArtwork(r.ctx, r.db, mfs)
+}
+
+// vibeNetTags are the VibeNet audio-feature tags used by SimilarByVibe -
+// see resources/mappings.yaml docs / conf.Server.Tags for how they get
+// populated into a track's Tags.
+var vibeNetTags = []model.TagName{
+	"acousticness", "danceability", "energy", "instrumentalness",
+	"liveness", "speechiness", "valence",
+}
+
+// vibeVector extracts all 7 VibeNet tag values as floats, or ok=false if any
+// are missing or unparseable. Deliberately all-or-nothing: VibeNet always
+// writes all 7 together, and requiring the full set keeps every computed
+// distance comparable, rather than allowing partial-dimension comparisons.
+func vibeVector(tags model.Tags) (vec [7]float64, ok bool) {
+	for i, tag := range vibeNetTags {
+		values := tags.Values(tag)
+		if len(values) == 0 {
+			return vec, false
+		}
+		f, err := strconv.ParseFloat(values[0], 64)
+		if err != nil {
+			return vec, false
+		}
+		vec[i] = f
+	}
+	return vec, true
+}
+
+func euclideanDistance(a, b [7]float64) float64 {
+	var sum float64
+	for i := range a {
+		d := a[i] - b[i]
+		sum += d * d
+	}
+	return math.Sqrt(sum)
+}
+
+func (r *mediaFileRepository) SimilarByVibe(id string, count int) ([]model.VibeSimilarity, error) {
+	seed, err := r.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	seedVec, ok := vibeVector(seed.Tags)
+	if !ok {
+		return nil, nil
+	}
+
+	// The Like prefilter is a cheap pre-hydration skip for tracks that
+	// clearly have no VibeNet data at all (avoids the full unmarshal/scan
+	// cost of GetAll for the rest of the library) - it's not the actual
+	// distance computation, which still needs all 7 tags per candidate and
+	// happens below in Go. See the plan for why this isn't pushed into SQL.
+	candidates, err := r.GetAll(model.QueryOptions{
+		Filters: And{NotEq{"media_file.id": id}, Like{"media_file.tags": "%acousticness%"}},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var results []model.VibeSimilarity
+	for _, mf := range candidates {
+		vec, ok := vibeVector(mf.Tags)
+		if !ok {
+			continue
+		}
+		results = append(results, model.VibeSimilarity{MediaFile: mf, Distance: euclideanDistance(seedVec, vec)})
+	}
+	slices.SortFunc(results, func(a, b model.VibeSimilarity) int {
+		return cmp.Compare(a.Distance, b.Distance)
+	})
+	if len(results) > count {
+		results = results[:count]
+	}
+	return results, nil
 }
 
 // GetRandom uses two passes so the random sort runs over a narrow rowid index instead of the

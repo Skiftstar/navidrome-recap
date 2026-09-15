@@ -58,12 +58,13 @@ type Subsonic struct {
 	JukeboxPlaylist *JukeboxPlaylist `xml:"jukeboxPlaylist,omitempty"                     json:"jukeboxPlaylist,omitempty"`
 
 	// OpenSubsonic extensions
-	OpenSubsonicExtensions *OpenSubsonicExtensions `xml:"openSubsonicExtensions,omitempty"  json:"openSubsonicExtensions,omitempty"`
-	LyricsList             *LyricsList             `xml:"lyricsList,omitempty"              json:"lyricsList,omitempty"`
-	PlayQueueByIndex       *PlayQueueByIndex       `xml:"playQueueByIndex,omitempty" json:"playQueueByIndex,omitempty"`
-	TranscodeDecision      *TranscodeDecision      `xml:"transcodeDecision,omitempty"       json:"transcodeDecision,omitempty"`
-	SonicMatches           *Array[SonicMatch]      `xml:"sonicMatch,omitempty"              json:"sonicMatch,omitempty"`
-	Recap                  *Recap                  `xml:"recap,omitempty"                   json:"recap,omitempty"`
+	OpenSubsonicExtensions *OpenSubsonicExtensions  `xml:"openSubsonicExtensions,omitempty"  json:"openSubsonicExtensions,omitempty"`
+	LyricsList             *LyricsList              `xml:"lyricsList,omitempty"              json:"lyricsList,omitempty"`
+	PlayQueueByIndex       *PlayQueueByIndex        `xml:"playQueueByIndex,omitempty" json:"playQueueByIndex,omitempty"`
+	TranscodeDecision      *TranscodeDecision       `xml:"transcodeDecision,omitempty"       json:"transcodeDecision,omitempty"`
+	SonicMatches           *Array[SonicMatch]       `xml:"sonicMatch,omitempty"              json:"sonicMatch,omitempty"`
+	Recap                  *Recap                   `xml:"recap,omitempty"                   json:"recap,omitempty"`
+	VibeSimilarTracks      *Array[VibeSimilarMatch] `xml:"vibeSimilarTrack,omitempty"       json:"vibeSimilarTrack,omitempty"`
 }
 
 const (
@@ -462,6 +463,15 @@ type TopSongs struct {
 type SonicMatch struct {
 	Entry      Child   `xml:"entry"      json:"entry"`
 	Similarity float64 `xml:"similarity" json:"similarity"`
+}
+
+// VibeSimilarMatch is one result of getVibeSimilarTracks (fork-only,
+// non-standard extension). Distance is the Euclidean distance between the
+// seed track's and this track's VibeNet audio-feature vectors - lower is
+// more similar, 0 is identical.
+type VibeSimilarMatch struct {
+	Entry    Child   `xml:"entry"         json:"entry"`
+	Distance float64 `xml:"distance,attr" json:"distance"`
 }
 
 // Recap is a fork-only, non-standard extension (not part of the Subsonic or

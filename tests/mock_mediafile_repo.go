@@ -34,6 +34,10 @@ type MockMediaFileRepo struct {
 	FindRecentFilesByPropertiesFunc func(missing model.MediaFile, since time.Time) (model.MediaFiles, error)
 	MatchesCriteriaValue            bool
 	MatchesCriteriaErr              error
+	// SimilarByVibeResult is a canned result for tests - not derived from Data.
+	SimilarByVibeResult []model.VibeSimilarity
+	// SimilarByVibeLastCount records the count SimilarByVibe was last called with.
+	SimilarByVibeLastCount int
 }
 
 func (m *MockMediaFileRepo) SetError(err bool) {
@@ -128,6 +132,14 @@ func (m *MockMediaFileRepo) GetCursor(qo ...model.QueryOptions) (model.MediaFile
 
 func (m *MockMediaFileRepo) GetCursorWithArtwork(qo ...model.QueryOptions) (model.MediaFileCursor, error) {
 	return m.GetCursor(qo...)
+}
+
+func (m *MockMediaFileRepo) SimilarByVibe(_ string, count int) ([]model.VibeSimilarity, error) {
+	m.SimilarByVibeLastCount = count
+	if m.Err {
+		return nil, errors.New("error")
+	}
+	return m.SimilarByVibeResult, nil
 }
 
 func (m *MockMediaFileRepo) Put(mf *model.MediaFile) error {
