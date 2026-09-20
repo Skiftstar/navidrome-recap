@@ -21,11 +21,13 @@ type ScrobbleRepository interface {
 	RecordScrobble(mediaFileID string, submissionTime time.Time, playedDurationMs *int64) error
 
 	// TopSongs returns, for the logged-in user, the most-scrobbled songs whose
-	// submission time falls within [from, to], ordered by play count descending.
+	// submission time falls within [from, to], ordered by total minutes
+	// played descending (play count as a tiebreaker).
 	TopSongs(from, to time.Time, limit int) ([]TopSong, error)
 	// TopArtists returns, for the logged-in user, the most-scrobbled artists
 	// (attributed via the "artist" role in media_file_artists) whose
-	// submission time falls within [from, to], ordered by play count descending.
+	// submission time falls within [from, to], ordered by total minutes
+	// played descending (play count as a tiebreaker).
 	TopArtists(from, to time.Time, limit int) ([]TopArtist, error)
 	// Summary returns overall listening totals for the logged-in user within [from, to].
 	Summary(from, to time.Time) (ListenSummary, error)

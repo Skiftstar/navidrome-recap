@@ -116,7 +116,7 @@ func (r *scrobbleRepository) TopSongs(from, to time.Time, limit int) ([]model.To
 			totalMinutesExpr+" as total_minutes",
 		).
 		GroupBy("s.media_file_id").
-		OrderBy("play_count desc").
+		OrderBy("total_minutes desc, play_count desc").
 		Limit(uint64(limit))
 	var res []model.TopSong
 	err := r.queryAll(sel, &res)
@@ -140,7 +140,7 @@ func (r *scrobbleRepository) TopArtists(from, to time.Time, limit int) ([]model.
 		Join("artist ar on ar.id = mfa.artist_id").
 		Where(r.scrobbleFilter(from, to)).
 		GroupBy("mfa.artist_id").
-		OrderBy("play_count desc").
+		OrderBy("total_minutes desc, play_count desc").
 		Limit(uint64(limit))
 	var res []model.TopArtist
 	err := r.queryAll(sel, &res)

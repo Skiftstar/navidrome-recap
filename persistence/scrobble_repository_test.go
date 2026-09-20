@@ -214,7 +214,7 @@ var _ = Describe("ScrobbleRepository", func() {
 		}
 
 		Describe("TopSongs", func() {
-			It("orders by play count and computes minutes from the real played duration where known, falling back to full track duration otherwise", func() {
+			It("orders by total minutes played (not play count) and computes minutes from the real played duration where known, falling back to full track duration otherwise", func() {
 				from, to := yearRange(2024)
 				songs, err := repo.TopSongs(from, to, 10)
 				Expect(err).ToNot(HaveOccurred())
@@ -224,7 +224,11 @@ var _ = Describe("ScrobbleRepository", func() {
 				for _, s := range songs {
 					byID[s.MediaFileID] = s
 				}
-				Expect(songs[0].MediaFileID).To(Equal(soloSongID), "the twice-scrobbled song should be first")
+				// untaggedDuoSong (300s, 1 play) ranks above soloSong (290s, 2 plays)
+				// despite its lower play count - minutes played is the primary sort key.
+				Expect(songs[0].MediaFileID).To(Equal(untaggedDuoSongID))
+				Expect(songs[1].MediaFileID).To(Equal(soloSongID))
+				Expect(songs[2].MediaFileID).To(Equal(duoSongID))
 				Expect(byID[soloSongID].PlayCount).To(Equal(int64(2)))
 				// 90s (real, first scrobble) + 200s (fallback, second scrobble) = 290s
 				Expect(byID[soloSongID].TotalMinutes).To(BeNumerically("~", 290.0/60.0, 0.001))
